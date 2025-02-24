@@ -11,7 +11,7 @@ type inputObject struct {
 }
 
 func main() {
-	//Run() method: wxample with InputObject
+	// Run() method: example with InputObject
 	RunUsingInputObject()
 
 	// Run() method: example with manager and workers
