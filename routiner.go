@@ -7,22 +7,13 @@ import (
 
 type Routiner struct {
 	input         chan any
+	inputThrough  chan any
 	output        chan string
 	wg            *sync.WaitGroup
 	quitJob       chan int
 	workers       int
 	activeWorkers int
 	mu            sync.RWMutex
-}
-
-func (r *Routiner) RunWorkers(worker func(r *Routiner, o any)) {
-	manager := func(r *Routiner) {
-		for i := 1; i <= r.Workers(); i++ {
-			r.Work(i)
-		}
-	}
-
-	r.Run(manager, worker)
 }
 
 // Run starts the job processes. It first initializes all
@@ -39,6 +30,9 @@ func (r *Routiner) Run(
 	manager func(r *Routiner),
 	worker func(r *Routiner, o any),
 ) {
+	defer close(r.output)
+	defer close(r.input)
+
 	r.startWorkers(worker)
 
 	go r.startManager(manager)
@@ -48,7 +42,6 @@ func (r *Routiner) Run(
 		case message := <-r.output:
 			log.Println(message)
 		case <-r.quitJob:
-			close(r.output)
 			return
 		}
 	}
@@ -65,10 +58,8 @@ func (r *Routiner) Info(str string) {
 	r.output <- str
 }
 
-// Work start the worker process by sending the data
-// to the input channel.
-func (r *Routiner) Work(obj any) {
-	r.input <- obj
+func (r *Routiner) Send(obj any) {
+	r.inputThrough <- obj
 }
 
 func (r *Routiner) Input() <-chan any {

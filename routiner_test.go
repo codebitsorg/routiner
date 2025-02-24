@@ -19,7 +19,7 @@ func TestRun(t *testing.T) {
 
 	manager := func(r *routiner.Routiner) {
 		for i := 1; i <= r.Workers(); i++ {
-			r.Work(i)
+			r.Send(i)
 		}
 	}
 
@@ -66,7 +66,7 @@ func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
 
 	manager := func(r *routiner.Routiner) {
 		for i := 1; i <= r.Workers(); i++ {
-			r.Work(i)
+			r.Send(i)
 		}
 	}
 
@@ -84,41 +84,66 @@ func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
 func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 	r := routiner.Init(routiner.WithWorkers(10))
 
+	// We need to create slices of worker channels and wait groups
+	// to keep track of the workers and their states. Because 
+	// wait groups will be passed through the channels, we
+	// need to use pointers for proper synchronization. 
 	workerChannels := make([]chan *sync.WaitGroup, r.Workers())
 	waitGroups := make([]*sync.WaitGroup, r.Workers())
 
+	// Each worker will receive a channel through which it
+	// will receive a wait group. Once wg is received, 
+	// the worker will call Done on it.
+	//
+	// We will be manually sending wait groups to the channels. That 
+	// way we can control the order in which the workers finish.
 	worker := func(r *routiner.Routiner, o any) {
 		ch := o.(chan *sync.WaitGroup)
 		wg := <-ch
 		wg.Done()
 	}
 
-	if r.ActiveWorkers() != 0 {
-		t.Errorf("Active workers should be 0, but got %d", r.ActiveWorkers())
-	}
-
-	// The testing process should only start once all workers are in the active state.
-	// We can achieve that by passing a WaitGroup to the manager clouser and call
-	// Wait after the Run method.
+	// The testing process should only start once all workers are in the 
+	// active state. We can achieve that by passing a WaitGroup to the 
+	// manager clouser and call Wait after the Run method.
 	//
 	// *The manager process in the Run method is started only after all
 	// workers has been set to an active state.
 	wgReadyToTest := new(sync.WaitGroup)
 	wgReadyToTest.Add(1)
-	go r.Run(func(r *routiner.Routiner) {
+
+	manager := func(r *routiner.Routiner) {
+		for i := 0; i < r.Workers(); i++ {
+			// Creating a new wait group for each worker and adding
+			// a pointer to it to the waitGroups slice.
+			waitGroups[i] = new(sync.WaitGroup)
+			// Incrementing the wait group counter for each worker.
+			waitGroups[i].Add(1)
+
+			// Creating a channel for each worker and adding 
+			// it to the workerChannels slice.
+			workerChannels[i] = make(chan *sync.WaitGroup)
+			// Send the channel to the worker. These channels will
+			// be used to send the wait groups to the workers.
+			r.Send(workerChannels[i])
+		}
+
+		// Once all workers have been initialized
+		// we can start the testing process.
 		wgReadyToTest.Done()
-	}, worker)
-	wgReadyToTest.Wait()
-
-	for i := 0; i < r.Workers(); i++ {
-		waitGroups[i] = new(sync.WaitGroup)
-		waitGroups[i].Add(1)
-
-		workerChannels[i] = make(chan *sync.WaitGroup)
-		r.Work(workerChannels[i])
 	}
 
-	// time.Sleep(time.Millisecond * 100)
+	// Check that there are no active workers 
+	// before starting the Run method.
+	if r.ActiveWorkers() != 0 {
+		t.Fatalf("Active workers should be 0, but got %d", r.ActiveWorkers())
+	}
+
+	go r.Run(manager, worker)
+
+	// Waiting for all workers to be in the active state
+	wgReadyToTest.Wait()
+
 	if r.ActiveWorkers() != r.Workers() {
 		t.Errorf("Active workers should be %d, but got %d", r.Workers(), r.ActiveWorkers())
 	}
@@ -166,7 +191,7 @@ func TestCallSafe(t *testing.T) {
 
 	manager := func(r *routiner.Routiner) {
 		for i := 1; i <= r.Workers(); i++ {
-			r.Work(i)
+			r.Send(i)
 		}
 	}
 
@@ -181,7 +206,7 @@ func TestWork(t *testing.T) {
 	r := routiner.Init(routiner.WithBufferedInputChannel(1))
 
 	testMessage := "Hello World!"
-	r.Work(testMessage)
+	r.work(testMessage)
 
 	select {
 	case message := <-r.Input():
@@ -201,9 +226,13 @@ func TestInfo_LogOutputType(t *testing.T) {
 	}()
 
 	expectedOutput := "Worker has finished!"
-	routiner.Init().RunWorkers(func(r *routiner.Routiner, o any) {
-		r.Info(expectedOutput)
-	})
+	manager := func(r *routiner.Routiner) {
+		r.Send(expectedOutput)
+	}
+	worker := func(r *routiner.Routiner, o any) {
+		r.Info(o.(string))
+	}
+	routiner.Init().Run(manager, worker)
 
 	logOutput := buf.String()
 

@@ -12,7 +12,21 @@ import (
 func (r *Routiner) startManager(manager func(r *Routiner)) {
 	defer r.recover()()
 
+	r.inputThrough = make(chan any)
+
+	for range r.Workers() {
+		go func() {
+			defer r.recover()()
+
+			r.work(r.inputThrough)
+		}()
+	}
+
 	manager(r)
+
+	// The inputThrough channel must be closed before
+	// the main input channel to avoid deadlocks.
+	close(r.inputThrough)
 
 	r.waitToFinish()
 }
@@ -34,21 +48,29 @@ func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 	defer wgAcitveWorkers.Wait()
 
 	// Start the workers.
-	for i := 1; i <= r.Workers(); i++ {
+	for range r.Workers() {
 		go func() {
 			defer r.recover()()
 
 			r.activateWorker(wgAcitveWorkers)
 
 			for input := range r.input {
-				worker(r, input)
+				for message := range input.(chan any) {
+					worker(r, message)
+				}
 				r.deactivateWorker()
 			}
 		}()
 	}
 }
 
-// Wait for all workers to finish.
+// work initiate the worker process by sending 
+// the data to the input channel.
+func (r *Routiner) work(obj any) {
+	r.input <- obj
+}
+
+// waitToFinish waits for all workers to finish.
 func (r *Routiner) waitToFinish() {
 	r.wg.Wait()
 	r.quitJob <- 0
