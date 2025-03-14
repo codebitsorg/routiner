@@ -17,6 +17,14 @@ func (r *Routiner) startManager(manager func(r *Routiner)) {
 	r.waitToFinish()
 }
 
+func (r *Routiner) startManagerFanOut(manager func(r *Routiner)) {
+	defer r.recover()()
+
+	manager(r)
+
+	r.waitToFinish()
+}
+
 // startWorkers Run the worker's handler. This function increases the
 // number of active workers and holds the worker until the data is
 // available in the input channel.
@@ -44,6 +52,24 @@ func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 				worker(r, input)
 				r.deactivateWorker()
 			}
+		}()
+	}
+}
+
+func (r *Routiner) startWorkersFanOut(workers []func(r *Routiner)) {
+	// Wait for all workers to be active.
+	wgAcitveWorkers := &sync.WaitGroup{}
+	wgAcitveWorkers.Add(len(workers))
+	defer wgAcitveWorkers.Wait()
+
+	// Start the workers.
+	for _, worker := range workers {
+		go func() {
+			defer r.recover()()
+
+			r.activateWorker(wgAcitveWorkers)
+			worker(r)
+			r.deactivateWorker()
 		}()
 	}
 }

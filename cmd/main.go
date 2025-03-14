@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	routiner "github.com/codebitsorg/routiner"
 )
@@ -12,13 +13,45 @@ type inputObject struct {
 
 func main() {
 	// Run() method: example with InputObject
-	RunUsingInputObject()
+	// RunUsingInputObject()
 
 	// Run() method: example with manager and workers
 	// RunWithManager()
 
 	// Run() method: example with only workers
 	// RunWorkers()
+
+	RunFanOut()
+}
+
+func RunFanOut() {
+	r := routiner.Init(routiner.WithWorkers(3))
+
+	manager := func(r *routiner.Routiner) {
+		for i := 1; i <= 8; i++ {
+			r.Send(fmt.Sprintf("%d.png", i))
+		}
+	}
+
+	worker1 := func(r *routiner.Routiner) {
+		in := r.Listen().(string)
+
+		for image := range in {
+			fmt.Printf("Convert image %d\n", image)
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	worker2 := func(r *routiner.Routiner) {
+		in := r.Listen().(string)
+
+		for image := range in {
+			fmt.Printf("Upload image %d\n", image)
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	r.RunFanOut(manager, worker1, worker2)
 }
 
 func RunUsingInputObject() {

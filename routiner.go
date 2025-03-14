@@ -54,6 +54,27 @@ func (r *Routiner) Run(
 	}
 }
 
+func (r *Routiner) RunFanOut(
+	manager func(r *Routiner),
+	workers ...func(r *Routiner),
+) {
+	defer close(r.output)
+	defer close(r.input)
+
+	r.startWorkersFanOut(workers)
+
+	go r.startManagerFanOut(manager)
+
+	for {
+		select {
+		case message := <-r.output:
+			log.Println(message)
+		case <-r.quitJob:
+			return
+		}
+	}
+}
+
 func (r *Routiner) CallSafe(f func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -68,6 +89,10 @@ func (r *Routiner) Info(str string) {
 // Work start the worker process by sending the data
 // to the input channel.
 func (r *Routiner) Work(obj any) {
+	r.input <- obj
+}
+
+func (r *Routiner) Send(obj any) {
 	r.input <- obj
 }
 
