@@ -7,6 +7,7 @@ import (
 
 type Routiner struct {
 	input         chan any
+	inputThrough  chan any
 	output        chan string
 	wg            *sync.WaitGroup
 	quitJob       chan int
@@ -54,22 +55,21 @@ func (r *Routiner) Run(
 	}
 }
 
-func (r *Routiner) RunFanOut(
+func (r *Routiner) RunThroughChannel(
 	manager func(r *Routiner),
-	workers ...func(r *Routiner),
+	worker func(r *Routiner, o chan any),
 ) {
-	defer close(r.output)
-	defer close(r.input)
+	r.startWorkersThroughChannel(worker)
 
-	r.startWorkersFanOut(workers)
-
-	go r.startManagerFanOut(manager)
+	go r.startManagerThroughChannel(manager)
 
 	for {
 		select {
 		case message := <-r.output:
 			log.Println(message)
 		case <-r.quitJob:
+			close(r.output)
+			// close(r.input)
 			return
 		}
 	}
@@ -93,7 +93,7 @@ func (r *Routiner) Work(obj any) {
 }
 
 func (r *Routiner) Send(obj any) {
-	r.input <- obj
+	r.inputThrough <- obj
 }
 
 func (r *Routiner) Input() <-chan any {

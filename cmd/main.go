@@ -21,11 +21,11 @@ func main() {
 	// Run() method: example with only workers
 	// RunWorkers()
 
-	RunFanOut()
+	RunThroughChannel()
 }
 
-func RunFanOut() {
-	r := routiner.Init(routiner.WithWorkers(3))
+func RunThroughChannel() {
+	r := routiner.Init(routiner.WithWorkers(4))
 
 	manager := func(r *routiner.Routiner) {
 		for i := 1; i <= 8; i++ {
@@ -33,25 +33,14 @@ func RunFanOut() {
 		}
 	}
 
-	worker1 := func(r *routiner.Routiner) {
-		in := r.Listen().(string)
-
+	worker := func(r *routiner.Routiner, in chan any) {
 		for image := range in {
-			fmt.Printf("Convert image %d\n", image)
+			fmt.Printf("Upload image %s\n", image.(string))
 			time.Sleep(1 * time.Second)
 		}
 	}
 
-	worker2 := func(r *routiner.Routiner) {
-		in := r.Listen().(string)
-
-		for image := range in {
-			fmt.Printf("Upload image %d\n", image)
-			time.Sleep(1 * time.Second)
-		}
-	}
-
-	r.RunFanOut(manager, worker1, worker2)
+	r.RunThroughChannel(manager, worker)
 }
 
 func RunUsingInputObject() {

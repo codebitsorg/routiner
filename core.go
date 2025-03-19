@@ -17,10 +17,24 @@ func (r *Routiner) startManager(manager func(r *Routiner)) {
 	r.waitToFinish()
 }
 
-func (r *Routiner) startManagerFanOut(manager func(r *Routiner)) {
+func (r *Routiner) startManagerThroughChannel(manager func(r *Routiner)) {
 	defer r.recover()()
 
+	r.inputThrough = make(chan any)
+
+	for range r.Workers() {
+		go func() {
+			defer r.recover()()
+
+			r.Work(r.inputThrough)
+		}()
+	}
+
 	manager(r)
+
+	// Close the inputThrough channel to avoid deadlock
+	// at main input channel.
+	close(r.inputThrough)
 
 	r.waitToFinish()
 }
@@ -56,20 +70,23 @@ func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 	}
 }
 
-func (r *Routiner) startWorkersFanOut(workers []func(r *Routiner)) {
+func (r *Routiner) startWorkersThroughChannel(worker func(r *Routiner, input chan any)) {
 	// Wait for all workers to be active.
 	wgAcitveWorkers := &sync.WaitGroup{}
-	wgAcitveWorkers.Add(len(workers))
+	wgAcitveWorkers.Add(r.Workers())
 	defer wgAcitveWorkers.Wait()
 
 	// Start the workers.
-	for _, worker := range workers {
+	for range r.Workers() {
 		go func() {
 			defer r.recover()()
 
 			r.activateWorker(wgAcitveWorkers)
-			worker(r)
-			r.deactivateWorker()
+
+			for input := range r.input {
+				worker(r, input.(chan any))
+				r.deactivateWorker()
+			}
 		}()
 	}
 }
