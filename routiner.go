@@ -16,16 +16,6 @@ type Routiner struct {
 	mu            sync.RWMutex
 }
 
-func (r *Routiner) RunWorkers(worker func(r *Routiner, o any)) {
-	manager := func(r *Routiner) {
-		for i := 1; i <= r.Workers(); i++ {
-			r.Work(i)
-		}
-	}
-
-	r.Run(manager, worker)
-}
-
 // Run starts the job processes. It first initializes all
 // the workers and set them in the active state.Then
 // launches the manager process.
@@ -46,27 +36,6 @@ func (r *Routiner) Run(
 	r.startWorkers(worker)
 
 	go r.startManager(manager)
-
-	for {
-		select {
-		case message := <-r.output:
-			log.Println(message)
-		case <-r.quitJob:
-			return
-		}
-	}
-}
-
-func (r *Routiner) RunThroughChannel(
-	manager func(r *Routiner),
-	worker func(r *Routiner, o chan any),
-) {
-	defer close(r.output)
-	defer close(r.input)
-
-	r.startWorkersThroughChannel(worker)
-
-	go r.startManagerThroughChannel(manager)
 
 	for {
 		select {

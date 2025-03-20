@@ -201,9 +201,13 @@ func TestInfo_LogOutputType(t *testing.T) {
 	}()
 
 	expectedOutput := "Worker has finished!"
-	routiner.Init().RunWorkers(func(r *routiner.Routiner, o any) {
-		r.Info(expectedOutput)
-	})
+	manager := func(r *routiner.Routiner) {
+		r.Send(expectedOutput)
+	}
+	worker := func(r *routiner.Routiner, o any) {
+		r.Info(o.(string))
+	}
+	routiner.Init().Run(manager, worker)
 
 	logOutput := buf.String()
 

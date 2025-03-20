@@ -12,14 +12,6 @@ import (
 func (r *Routiner) startManager(manager func(r *Routiner)) {
 	defer r.recover()()
 
-	manager(r)
-
-	r.waitToFinish()
-}
-
-func (r *Routiner) startManagerThroughChannel(manager func(r *Routiner)) {
-	defer r.recover()()
-
 	r.inputThrough = make(chan any)
 
 	for range r.Workers() {
@@ -56,27 +48,6 @@ func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 	defer wgAcitveWorkers.Wait()
 
 	// Start the workers.
-	for i := 1; i <= r.Workers(); i++ {
-		go func() {
-			defer r.recover()()
-
-			r.activateWorker(wgAcitveWorkers)
-
-			for input := range r.input {
-				worker(r, input)
-				r.deactivateWorker()
-			}
-		}()
-	}
-}
-
-func (r *Routiner) startWorkersThroughChannel(worker func(r *Routiner, input chan any)) {
-	// Wait for all workers to be active.
-	wgAcitveWorkers := &sync.WaitGroup{}
-	wgAcitveWorkers.Add(r.Workers())
-	defer wgAcitveWorkers.Wait()
-
-	// Start the workers.
 	for range r.Workers() {
 		go func() {
 			defer r.recover()()
@@ -84,7 +55,9 @@ func (r *Routiner) startWorkersThroughChannel(worker func(r *Routiner, input cha
 			r.activateWorker(wgAcitveWorkers)
 
 			for input := range r.input {
-				worker(r, input.(chan any))
+				for message := range input.(chan any) {
+					worker(r, message)
+				}
 				r.deactivateWorker()
 			}
 		}()
