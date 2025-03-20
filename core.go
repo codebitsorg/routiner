@@ -32,8 +32,8 @@ func (r *Routiner) startManagerThroughChannel(manager func(r *Routiner)) {
 
 	manager(r)
 
-	// Close the inputThrough channel to avoid deadlock
-	// at main input channel.
+	// The inputThrough channel must be closed before
+	// the main input channel to avoid deadlocks.
 	close(r.inputThrough)
 
 	r.waitToFinish()

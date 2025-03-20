@@ -40,6 +40,9 @@ func (r *Routiner) Run(
 	manager func(r *Routiner),
 	worker func(r *Routiner, o any),
 ) {
+	defer close(r.output)
+	defer close(r.input)
+
 	r.startWorkers(worker)
 
 	go r.startManager(manager)
@@ -49,7 +52,6 @@ func (r *Routiner) Run(
 		case message := <-r.output:
 			log.Println(message)
 		case <-r.quitJob:
-			close(r.output)
 			return
 		}
 	}
@@ -59,6 +61,9 @@ func (r *Routiner) RunThroughChannel(
 	manager func(r *Routiner),
 	worker func(r *Routiner, o chan any),
 ) {
+	defer close(r.output)
+	defer close(r.input)
+
 	r.startWorkersThroughChannel(worker)
 
 	go r.startManagerThroughChannel(manager)
@@ -68,8 +73,6 @@ func (r *Routiner) RunThroughChannel(
 		case message := <-r.output:
 			log.Println(message)
 		case <-r.quitJob:
-			close(r.output)
-			// close(r.input)
 			return
 		}
 	}
