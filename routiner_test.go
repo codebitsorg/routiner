@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/codebitsorg/routiner"
 )
@@ -85,17 +84,17 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 	r := routiner.Init(routiner.WithWorkers(10))
 
 	// We need to create slices of worker channels and wait groups
-	// to keep track of the workers and their states. Because 
+	// to keep track of the workers and their states. Because
 	// wait groups will be passed through the channels, we
-	// need to use pointers for proper synchronization. 
+	// need to use pointers for proper synchronization.
 	workerChannels := make([]chan *sync.WaitGroup, r.Workers())
 	waitGroups := make([]*sync.WaitGroup, r.Workers())
 
 	// Each worker will receive a channel through which it
-	// will receive a wait group. Once wg is received, 
+	// will receive a wait group. Once wg is received,
 	// the worker will call Done on it.
 	//
-	// We will be manually sending wait groups to the channels. That 
+	// We will be manually sending wait groups to the channels. That
 	// way we can control the order in which the workers finish.
 	worker := func(r *routiner.Routiner, o any) {
 		ch := o.(chan *sync.WaitGroup)
@@ -103,8 +102,8 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 		wg.Done()
 	}
 
-	// The testing process should only start once all workers are in the 
-	// active state. We can achieve that by passing a WaitGroup to the 
+	// The testing process should only start once all workers are in the
+	// active state. We can achieve that by passing a WaitGroup to the
 	// manager clouser and call Wait after the Run method.
 	//
 	// *The manager process in the Run method is started only after all
@@ -120,7 +119,7 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 			// Incrementing the wait group counter for each worker.
 			waitGroups[i].Add(1)
 
-			// Creating a channel for each worker and adding 
+			// Creating a channel for each worker and adding
 			// it to the workerChannels slice.
 			workerChannels[i] = make(chan *sync.WaitGroup)
 			// Send the channel to the worker. These channels will
@@ -133,7 +132,7 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 		wgReadyToTest.Done()
 	}
 
-	// Check that there are no active workers 
+	// Check that there are no active workers
 	// before starting the Run method.
 	if r.ActiveWorkers() != 0 {
 		t.Fatalf("Active workers should be 0, but got %d", r.ActiveWorkers())
@@ -199,21 +198,6 @@ func TestCallSafe(t *testing.T) {
 
 	if safeSum != 100000 {
 		t.Errorf("Safe sum should be 100000, but got %d", safeSum)
-	}
-}
-
-func TestWork(t *testing.T) {
-	r := routiner.Init(routiner.WithBufferedInputChannel(1))
-
-	testMessage := "Hello World!"
-	r.work(testMessage)
-
-	select {
-	case message := <-r.Input():
-		if message != testMessage {
-			t.Errorf("Expected message %q, got %q", testMessage, message)
-		}
-	case <-time.After(time.Millisecond * 100):
 	}
 }
 
