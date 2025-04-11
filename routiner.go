@@ -11,7 +11,7 @@ type Routiner struct {
 	input         chan any
 	inputThrough  chan any
 	output        chan string
-	wg            *sync.WaitGroup
+	wg            *sync.WaitGroup // Wait group to track the number of active workers.
 	quitJob       chan int
 	workers       int
 	activeWorkers int
@@ -166,15 +166,29 @@ func (r *Routiner) startManager(manager func(r *Routiner)) {
 
 	r.inputThrough = make(chan any)
 
+	// If manager is too fast and there are too many workers to 
+	// spawn out, there might be a situation (panic) where a 
+	// goroutine sends closed inputThrough channel to the 
+	// workers. To avoid this, we need to use WaitGroups 
+	// to wait for for all workers receiving their 
+	// inputThrough channel.
+	wg := &sync.WaitGroup{}
+
 	for range r.Workers() {
+		wg.Add(1)
 		go func() {
 			defer r.recover()()
+			defer wg.Done()
 
-			r.work(r.inputThrough)
+			r.input <- r.inputThrough
 		}()
 	}
 
 	manager(r)
+
+	// Before closing the inputThrough channel, we must be 
+	// sure that it has been passed to all workers.
+	wg.Wait()
 
 	// The inputThrough channel must be closed before
 	// the main input channel to avoid deadlocks.
@@ -214,12 +228,6 @@ func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 			}
 		}()
 	}
-}
-
-// work initiate the worker process by sending
-// the data to the input channel.
-func (r *Routiner) work(obj any) {
-	r.input <- obj
 }
 
 // waitToFinish waits for all workers to finish.

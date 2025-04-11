@@ -12,6 +12,8 @@ import (
 )
 
 func TestInit_InitializingRoutinerAddsOneWorkerByDefault(t *testing.T) {
+	t.Parallel()
+
 	r := routiner.Init()
 	if r.Workers() != 1 {
 		t.Errorf("Workers should be 1, but got %d", r.Workers())
@@ -19,6 +21,8 @@ func TestInit_InitializingRoutinerAddsOneWorkerByDefault(t *testing.T) {
 }
 
 func TestInit_CanOptionalySetWorkers(t *testing.T) {
+	t.Parallel()
+
 	r := routiner.Init(routiner.WithWorkers(4))
 	if r.Workers() != 4 {
 		t.Errorf("Workers should be 4, but got %d", r.Workers())
@@ -26,6 +30,8 @@ func TestInit_CanOptionalySetWorkers(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
+	t.Parallel()
+
 	r := routiner.Init(routiner.WithWorkers(10))
 
 	workerOutput := make([]string, r.Workers())
@@ -55,6 +61,8 @@ func TestRun(t *testing.T) {
 }
 
 func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
+	t.Parallel()
+
 	var workerOutput []string
 
 	r := routiner.Init(routiner.WithWorkers(3))
@@ -95,6 +103,8 @@ func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
 }
 
 func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
+	t.Parallel()
+
 	r := routiner.Init(routiner.WithWorkers(10))
 
 	// We need to create slices of worker channels and wait groups
@@ -190,6 +200,8 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 }
 
 func TestCallSafe(t *testing.T) {
+	t.Parallel()
+
 	safeSum := 0
 
 	r := routiner.Init(routiner.WithWorkers(100))
@@ -216,6 +228,8 @@ func TestCallSafe(t *testing.T) {
 }
 
 func TestInfo_LogOutputType(t *testing.T) {
+	t.Parallel()
+
 	// Redirecting log output to a buffer, so we can test it.
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
