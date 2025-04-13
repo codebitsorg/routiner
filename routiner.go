@@ -8,8 +8,8 @@ import (
 )
 
 type Routiner struct {
-	input         chan any
-	inputThrough  chan any
+	initChan      chan any
+	input         []chan any
 	output        chan string
 	wg            *sync.WaitGroup // Wait group to track the number of active workers.
 	quitJob       chan int
@@ -18,16 +18,33 @@ type Routiner struct {
 	mu            sync.RWMutex
 }
 
-type option func(*Routiner)
+// ***** Options *****
+type option struct {
+	name   string
+	action func(*Routiner)
+}
+
+func newOption(name string, action func(*Routiner)) option {
+	return option{
+		name:   name,
+		action: action,
+	}
+}
+
+func (o option) apply(r *Routiner) {
+	o.action(r)
+}
+
+// ***** End Options *****
 
 // NewRoutiner creates a new Routiner.
 func NewRoutiner(opts ...option) *Routiner {
 	r := &Routiner{
-		input:   make(chan any),
-		output:  make(chan string),
-		wg:      new(sync.WaitGroup),
-		quitJob: make(chan int),
-		workers: 1,
+		initChan: make(chan any),
+		output:   make(chan string),
+		wg:       new(sync.WaitGroup),
+		quitJob:  make(chan int),
+		workers:  1,
 	}
 
 	r.With(opts...)
@@ -47,44 +64,50 @@ func Init(opts ...option) *Routiner {
 
 // With is a helper function to set options
 func (r *Routiner) With(opts ...option) {
+	// Some other options might rely on amount of workers
+	// set. So we need to apply the WithWorkers option
+	// first if it is present in the options slice.
+	for i, opt := range opts {
+		if opt.name == "WithWorkers" {
+			opt.apply(r)
+			// Remove WithWorkers from the slice.
+			opts = append(opts[:i], opts[i+1:]...)
+			break
+		}
+	}
+
+	// Apply the remaining options.
 	for _, opt := range opts {
-		opt(r)
+		opt.apply(r)
 	}
 }
 
 // WithWorkers sets the number of workers to n.
 func WithWorkers(n int) option {
-	return func(r *Routiner) {
+	return newOption("WithWorkers", func(r *Routiner) {
 		if n < 1 {
 			n = 1
 		}
 
 		r.workers = n
-	}
+	})
 }
 
-// WithBufferedInputChannel creates a buffered input channel
-// with size n.
-func WithBufferedInputChannel(n int) option {
-	return func(r *Routiner) {
-		if n < 1 {
-			n = 1
+func WithInputChannels(n int) option {
+	return newOption("WithInputChannels", func(r *Routiner) {
+		if n > 1 {
+			if n > r.Workers() {
+				n = r.Workers()
+			}
+
+			r.input = make([]chan any, n)
+
+			for i := 0; i < n; i++ {
+				r.input[i] = make(chan any)
+			}
 		}
 
-		r.input = make(chan any, n)
-	}
-}
-
-// WithBufferedOutputChannel creates a buffered output channel
-// with size n.
-func WithBufferedOutputChannel(n int) option {
-	return func(r *Routiner) {
-		if n < 1 {
-			n = 1
-		}
-
-		r.output = make(chan string, n)
-	}
+	})
 }
 
 // Run starts the job processes. It first initializes all
@@ -102,7 +125,7 @@ func (r *Routiner) Run(
 	worker func(r *Routiner, o any),
 ) {
 	defer close(r.output)
-	defer close(r.input)
+	defer close(r.initChan)
 
 	r.startWorkers(worker)
 
@@ -130,15 +153,15 @@ func (r *Routiner) Info(str string) {
 }
 
 func (r *Routiner) Send(obj any) {
-	r.inputThrough <- obj
+	r.input[0] <- obj
 }
 
 func (r *Routiner) Input() <-chan any {
-	return r.input
+	return r.initChan
 }
 
 func (r *Routiner) Listen() any {
-	return <-r.input
+	return <-r.initChan
 }
 
 func (r *Routiner) Workers() int {
@@ -159,40 +182,65 @@ func (r *Routiner) Quit() {
 	r.resetActiveWorkers()
 }
 
-// startManager starts the manager process and waits
-// for all the workers to finish.
+// startManager starts the manager process and
+// waits for all the workers to finish.
 func (r *Routiner) startManager(manager func(r *Routiner)) {
 	defer r.recover()()
 
-	r.inputThrough = make(chan any)
+	// If WithInputChannels option is not set the
+	// input field will be nil. In this case we
+	// need to initialize it with a single channel.
+	if r.input == nil {
+		r.input = append(r.input, make(chan any))
+	}
 
-	// If manager is too fast and there are too many workers to 
-	// spawn out, there might be a situation (panic) where a 
-	// goroutine sends closed inputThrough channel to the 
-	// workers. To avoid this, we need to use WaitGroups 
-	// to wait for for all workers receiving their 
-	// inputThrough channel.
+	// If manager is too fast and there are too many workers to
+	// spawn out, there might be a situation (panic) where a
+	// goroutine sends closed input channel to the
+	// workers. To avoid this, we need to use WaitGroups
+	// to wait for for all workers receiving their
+	// input channel.
 	wg := &sync.WaitGroup{}
 
-	for range r.Workers() {
+	// In case input channels and workers aren't in the equal proportion
+	// we need to spread input channels evenly across all workers. To
+	// do so we need to calculate the number of workers that will
+	// receive the same input channel.
+	currentInputIndex := 0
+	inputAssinmentStep := r.Workers() / len(r.input)
+	for w := range r.Workers() {
 		wg.Add(1)
 		go func() {
 			defer r.recover()()
 			defer wg.Done()
 
-			r.input <- r.inputThrough
+			r.initChan <- r.input[currentInputIndex]
 		}()
+
+		// Increment the currentInputIndex once the set portion
+		// of input channels have been sent to the workers.
+		//
+		// len(r.input) > w+1 - checking if there
+		// are more input channels left to be sent.
+		//
+		// (w+1)%inputAssinmentStep == 0 - checking if the
+		// current iteration is the last one in the step.
+		if len(r.input) > w+1 && (w+1)%inputAssinmentStep == 0 {
+			currentInputIndex++
+		}
 	}
 
 	manager(r)
 
-	// Before closing the inputThrough channel, we must be 
-	// sure that it has been passed to all workers.
+	// Before closing input channels, we must be sure
+	// that they have been passed to all workers.
 	wg.Wait()
 
-	// The inputThrough channel must be closed before
-	// the main input channel to avoid deadlocks.
-	close(r.inputThrough)
+	// To avoid deadlocks Input channels 
+	// must be closed before initChan.
+	for _, in := range r.input {
+		close(in)
+	}
 
 	r.waitToFinish()
 }
@@ -220,7 +268,7 @@ func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 
 			r.activateWorker(wgAcitveWorkers)
 
-			for input := range r.input {
+			for input := range r.initChan {
 				for message := range input.(chan any) {
 					worker(r, message)
 				}
