@@ -57,11 +57,6 @@ func New(opts ...option) *Routiner {
 	return NewRoutiner(opts...)
 }
 
-// Init is a helper function to create a new Routiner.
-func Init(opts ...option) *Routiner {
-	return NewRoutiner(opts...)
-}
-
 // With is a helper function to set options
 func (r *Routiner) With(opts ...option) {
 	// Some other options might rely on amount of workers
@@ -168,6 +163,10 @@ func (r *Routiner) Workers() int {
 	return r.workers
 }
 
+func (r *Routiner) CountInputChannels() int {
+	return len(r.input)
+}
+
 // ActiveWorkers return the number of active workers.
 func (r *Routiner) ActiveWorkers() int {
 	r.mu.RLock()
@@ -236,7 +235,7 @@ func (r *Routiner) startManager(manager func(r *Routiner)) {
 	// that they have been passed to all workers.
 	wg.Wait()
 
-	// To avoid deadlocks Input channels 
+	// To avoid deadlocks Input channels
 	// must be closed before initChan.
 	for _, in := range r.input {
 		close(in)

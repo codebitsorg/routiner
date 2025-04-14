@@ -11,28 +11,43 @@ import (
 	"github.com/codebitsorg/routiner"
 )
 
-func TestInit_InitializingRoutinerAddsOneWorkerByDefault(t *testing.T) {
+func TestNew_InitializingRoutinerAddsOneWorkerByDefault(t *testing.T) {
 	t.Parallel()
 
-	r := routiner.Init()
+	r := routiner.New()
 	if r.Workers() != 1 {
 		t.Errorf("Workers should be 1, but got %d", r.Workers())
 	}
 }
 
-func TestInit_CanOptionalySetWorkers(t *testing.T) {
+func TestWithWorkersOption(t *testing.T) {
 	t.Parallel()
 
-	r := routiner.Init(routiner.WithWorkers(4))
+	r := routiner.New(routiner.WithWorkers(4))
 	if r.Workers() != 4 {
 		t.Errorf("Workers should be 4, but got %d", r.Workers())
+	}
+}
+
+func TestWithInputChannelsOption(t *testing.T) {
+	t.Parallel()
+
+	r := routiner.New(routiner.WithInputChannels(5))
+
+	if r.CountInputChannels() != 1 {
+		t.Errorf("Input channels should be 1, but got %d", r.CountInputChannels())
+	}
+
+	r = routiner.New(routiner.WithWorkers(5), routiner.WithInputChannels(5))
+	if r.CountInputChannels() != 5 {
+		t.Errorf("Input channels should be 5, but got %d", r.CountInputChannels())
 	}
 }
 
 func TestRun(t *testing.T) {
 	t.Parallel()
 
-	r := routiner.Init(routiner.WithWorkers(10))
+	r := routiner.New(routiner.WithWorkers(10))
 
 	workerOutput := make([]string, r.Workers())
 
@@ -65,7 +80,7 @@ func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
 
 	var workerOutput []string
 
-	r := routiner.Init(routiner.WithWorkers(3))
+	r := routiner.New(routiner.WithWorkers(3))
 
 	// Create a WaitGroup to hold all the workers
 	// until the quit signal is received.
@@ -105,7 +120,7 @@ func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
 func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 	t.Parallel()
 
-	r := routiner.Init(routiner.WithWorkers(10))
+	r := routiner.New(routiner.WithWorkers(10))
 
 	// We need to create slices of worker channels and wait groups
 	// to keep track of the workers and their states. Because
@@ -204,7 +219,7 @@ func TestCallSafe(t *testing.T) {
 
 	safeSum := 0
 
-	r := routiner.Init(routiner.WithWorkers(100))
+	r := routiner.New(routiner.WithWorkers(100))
 
 	worker := func(r *routiner.Routiner, o any) {
 		for i := 0; i < 1000; i++ {
@@ -244,7 +259,7 @@ func TestInfo_LogOutputType(t *testing.T) {
 	worker := func(r *routiner.Routiner, o any) {
 		r.Info(o.(string))
 	}
-	routiner.Init().Run(manager, worker)
+	routiner.New().Run(manager, worker)
 
 	logOutput := buf.String()
 
