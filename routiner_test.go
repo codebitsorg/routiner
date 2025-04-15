@@ -44,7 +44,7 @@ func TestWithInputChannelsOption(t *testing.T) {
 	}
 }
 
-func TestRun(t *testing.T) {
+func TestRunWithSingleInputChannel(t *testing.T) {
 	t.Parallel()
 
 	r := routiner.New(routiner.WithWorkers(10))
@@ -73,6 +73,36 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunWithMultipleInputChannles(t *testing.T) {
+	t.Parallel()
+
+	r := routiner.New(routiner.WithWorkers(5), routiner.WithInputChannels(3))
+
+	iterations := 20
+	workerOutput := make([]int, 0, iterations)
+
+	manager := func(r *routiner.Routiner) {
+		for i := 1; i <= iterations; i++ {
+			r.Send(i)
+		}
+	}
+
+	worker := func(r *routiner.Routiner, o any) {
+		id := o.(int)
+		r.CallSafe(func() {
+			workerOutput = append(workerOutput, id)
+		})
+	}
+
+	r.Run(manager, worker)
+
+	r.CallSafe(func() {
+		if len(workerOutput) != iterations {
+			t.Errorf("Expected total iterations to be %d, but got %d", iterations, len(workerOutput))
+		}
+	})
 }
 
 func TestJobCanBeQuitAtAnyMoment(t *testing.T) {

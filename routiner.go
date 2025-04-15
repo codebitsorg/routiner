@@ -3,6 +3,7 @@ package routiner
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"runtime/debug"
 	"sync"
 )
@@ -148,7 +149,11 @@ func (r *Routiner) Info(str string) {
 }
 
 func (r *Routiner) Send(obj any) {
-	r.input[0] <- obj
+	// TODO: implement round-robin logic
+
+	// Random logic to select the input channel
+	i := rand.Intn(len(r.input))
+	r.input[i] <- obj
 }
 
 func (r *Routiner) Input() <-chan any {
@@ -186,9 +191,9 @@ func (r *Routiner) Quit() {
 func (r *Routiner) startManager(manager func(r *Routiner)) {
 	defer r.recover()()
 
-	// If WithInputChannels option is not set the
-	// input field will be nil. In this case we
-	// need to initialize it with a single channel.
+	// If WithInputChannels option is not set the input
+	// field will be nil. In this case we need to
+	// initialize it with a single channel.
 	if r.input == nil {
 		r.input = append(r.input, make(chan any))
 	}
@@ -199,33 +204,29 @@ func (r *Routiner) startManager(manager func(r *Routiner)) {
 	// workers. To avoid this, we need to use WaitGroups
 	// to wait for for all workers receiving their
 	// input channel.
-	wg := &sync.WaitGroup{}
+	wg := sync.WaitGroup{}
 
 	// In case input channels and workers aren't in the equal proportion
-	// we need to spread input channels evenly across all workers. To
-	// do so we need to calculate the number of workers that will
-	// receive the same input channel.
+	// we need to spread input channels evenly across all workers.
 	currentInputIndex := 0
-	inputAssinmentStep := r.Workers() / len(r.input)
-	for w := range r.Workers() {
+
+	for range r.Workers() {
 		wg.Add(1)
-		go func() {
+		// Check if we should pass the inputIndex
+		go func(inputIndex int) {
 			defer r.recover()()
 			defer wg.Done()
+			r.initChan <- r.input[inputIndex]
+		}(currentInputIndex)
 
-			r.initChan <- r.input[currentInputIndex]
-		}()
+		// Increment the currentInputIndex after each iteration to
+		// spread the input channels evenly across all workers.
+		currentInputIndex += 1
 
-		// Increment the currentInputIndex once the set portion
-		// of input channels have been sent to the workers.
-		//
-		// len(r.input) > w+1 - checking if there
-		// are more input channels left to be sent.
-		//
-		// (w+1)%inputAssinmentStep == 0 - checking if the
-		// current iteration is the last one in the step.
-		if len(r.input) > w+1 && (w+1)%inputAssinmentStep == 0 {
-			currentInputIndex++
+		// Once the currentInputIndex greater than the
+		// number of input channels - reset it to 0.
+		if currentInputIndex > len(r.input)-1 {
+			currentInputIndex = 0
 		}
 	}
 
@@ -256,7 +257,7 @@ func (r *Routiner) startManager(manager func(r *Routiner)) {
 // wait group are decremented.
 func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 	// Wait for all workers to be active.
-	wgAcitveWorkers := &sync.WaitGroup{}
+	wgAcitveWorkers := sync.WaitGroup{}
 	wgAcitveWorkers.Add(r.Workers())
 	defer wgAcitveWorkers.Wait()
 
@@ -265,7 +266,7 @@ func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
 		go func() {
 			defer r.recover()()
 
-			r.activateWorker(wgAcitveWorkers)
+			r.activateWorker(&wgAcitveWorkers)
 
 			for input := range r.initChan {
 				for message := range input.(chan any) {
