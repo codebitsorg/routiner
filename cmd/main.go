@@ -17,7 +17,7 @@ func main() {
 }
 
 func RunSimple() {
-	r := routiner.Init(routiner.WithWorkers(3))
+	r := routiner.New(routiner.WithWorkers(3))
 
 	manager := func(r *routiner.Routiner) {
 		for i := 1; i <= 8; i++ {
@@ -34,7 +34,7 @@ func RunSimple() {
 }
 
 func RunUsingInputObject() {
-	r := routiner.Init(routiner.WithWorkers(4))
+	r := routiner.New(routiner.WithWorkers(4))
 
 	manager := func(r *routiner.Routiner) {
 		for i := 1; i <= r.Workers(); i++ {
