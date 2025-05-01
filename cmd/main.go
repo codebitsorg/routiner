@@ -12,42 +12,22 @@ type inputObject struct {
 }
 
 func main() {
-	RunSimple()
-	// RunUsingInputObject()
+	BasicUsage()
 }
 
-func RunSimple() {
-	r := routiner.New(routiner.WithWorkers(3))
+func BasicUsage() {
+	r := routiner.New()
 
 	manager := func(r *routiner.Routiner) {
-		for i := 1; i <= 8; i++ {
+		for i := 1; i <= 10; i++ {
 			r.Send(i)
 		}
 	}
 
-	worker := func(r *routiner.Routiner, o any) {
-		r.Info(fmt.Sprintf("Worker %d", o.(int)))
-		time.Sleep(1 * time.Second)
+	worker := func(r *routiner.Routiner, m any) {
+		time.Sleep(500 * time.Millisecond)
+		r.Info(fmt.Sprintf("Worker %d", m.(int)))
 	}
 
-	r.Run(manager, worker)
-}
-
-func RunUsingInputObject() {
-	r := routiner.New(routiner.WithWorkers(4))
-
-	manager := func(r *routiner.Routiner) {
-		for i := 1; i <= r.Workers(); i++ {
-			r.Send(inputObject{id: i})
-		}
-	}
-
-	worker := func(r *routiner.Routiner, o interface{}) {
-		obj := o.(inputObject)
-		r.Info(fmt.Sprintf("Worker %d", obj.id))
-	}
-
-	r.Run(manager, worker)
-
-	fmt.Println("All done!")
+	r.Run(manager, worker, "default", 3)
 }

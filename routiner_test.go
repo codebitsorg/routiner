@@ -11,153 +11,259 @@ import (
 	"github.com/codebitsorg/routiner"
 )
 
-func TestNew_InitializingRoutinerAddsOneWorkerByDefault(t *testing.T) {
+func TestTotalInputWorkers(t *testing.T) {
+	t.Parallel()
+
+	expectedHighInputWorkers := 2
+	expectedLowInputWorkers := 4
+
+	r := routiner.New()
+
+	r.AddWorker(
+		func(r *routiner.Routiner, m any) {},
+		"high",
+		expectedHighInputWorkers,
+	)
+
+	r.AddWorker(
+		func(r *routiner.Routiner, m any) {},
+		"low",
+		expectedLowInputWorkers,
+	)
+
+	if r.TotalInputWorkers("high") != expectedHighInputWorkers {
+		t.Errorf("Expected %d high input workers, but got %d", expectedHighInputWorkers, r.TotalInputWorkers("high"))
+	}
+
+	if r.TotalInputWorkers("low") != expectedLowInputWorkers {
+		t.Errorf("Expected %d low input workers, but got %d", expectedLowInputWorkers, r.TotalInputWorkers("low"))
+	}
+}
+
+func TestTotalWorkers(t *testing.T) {
 	t.Parallel()
 
 	r := routiner.New()
-	if r.Workers() != 1 {
-		t.Errorf("Workers should be 1, but got %d", r.Workers())
-	}
-}
+	r.AddWorker(
+		func(r *routiner.Routiner, m any) {},
+		"default",
+		10,
+	)
 
-func TestWithWorkersOption(t *testing.T) {
-	t.Parallel()
-
-	r := routiner.New(routiner.WithWorkers(4))
-	if r.Workers() != 4 {
-		t.Errorf("Workers should be 4, but got %d", r.Workers())
-	}
-}
-
-func TestWithInputChannelsOption(t *testing.T) {
-	t.Parallel()
-
-	r := routiner.New(routiner.WithInputChannels(5))
-
-	if r.CountInputChannels() != 1 {
-		t.Errorf("Input channels should be 1, but got %d", r.CountInputChannels())
-	}
-
-	r = routiner.New(routiner.WithWorkers(5), routiner.WithInputChannels(5))
-	if r.CountInputChannels() != 5 {
-		t.Errorf("Input channels should be 5, but got %d", r.CountInputChannels())
+	if r.TotalWorkers() != 10 {
+		t.Errorf("Expected 10 workers, but got %d", r.TotalWorkers())
 	}
 }
 
 func TestRunWithSingleInputChannel(t *testing.T) {
 	t.Parallel()
 
-	r := routiner.New(routiner.WithWorkers(10))
+	r := routiner.New()
 
-	workerOutput := make([]string, r.Workers())
+	totalWorkers := 10
+	workerOutput := make([]string, totalWorkers)
 
 	manager := func(r *routiner.Routiner) {
-		for i := 1; i <= r.Workers(); i++ {
+		for i := 0; i < r.TotalWorkers(); i++ {
 			r.Send(i)
 		}
 	}
 
-	worker := func(r *routiner.Routiner, o any) {
-		id := o.(int)
+	worker := func(r *routiner.Routiner, m any) {
+		id := m.(int)
 		r.CallSafe(func() {
-			workerOutput[id-1] = fmt.Sprintf("Worker %d", id)
+			workerOutput[id] = fmt.Sprintf("Worker %d", id)
 		})
 	}
 
-	r.Run(manager, worker)
+	r.AddManager(manager).AddWorker(worker, "default", totalWorkers)
+	r.Start()
 
-	for i := 0; i < r.Workers(); i++ {
+	for i := 0; i < r.TotalWorkers(); i++ {
 		r.CallSafe(func() {
-			if workerOutput[i] != fmt.Sprintf("Worker %d", i+1) {
-				t.Errorf("Worker %d did not run", i+1)
+			if workerOutput[i] != fmt.Sprintf("Worker %d", i) {
+				t.Errorf("Worker %d did not run", i)
 			}
 		})
 	}
 }
 
-func TestRunWithMultipleInputChannles(t *testing.T) {
+func TestRunWithMultipleInputChannels(t *testing.T) {
 	t.Parallel()
 
-	r := routiner.New(routiner.WithWorkers(5), routiner.WithInputChannels(3))
+	r := routiner.New()
 
-	iterations := 20
-	workerOutput := make([]int, 0, iterations)
+	highPriorityIterations := 5
+	highPriorityOutput := make([]string, 0, highPriorityIterations)
+	lowPriorityIterations := 10
+	lowPriorityOutput := make([]string, 0, lowPriorityIterations)
 
 	manager := func(r *routiner.Routiner) {
-		for i := 1; i <= iterations; i++ {
-			r.Send(i)
+		for i := 1; i <= highPriorityIterations; i++ {
+			r.SendTo("high", i)
+		}
+
+		for i := 1; i <= lowPriorityIterations; i++ {
+			r.SendTo("low", i)
 		}
 	}
 
-	worker := func(r *routiner.Routiner, o any) {
-		id := o.(int)
+	workersWithHighPriority := func(r *routiner.Routiner, m any) {
+		id := m.(int)
 		r.CallSafe(func() {
-			workerOutput = append(workerOutput, id)
+			highPriorityOutput = append(
+				highPriorityOutput,
+				fmt.Sprintf("High: %d", id),
+			)
 		})
 	}
 
-	r.Run(manager, worker)
+	workersWithLowPriority := func(r *routiner.Routiner, m any) {
+		id := m.(int)
+		r.CallSafe(func() {
+			lowPriorityOutput = append(
+				lowPriorityOutput,
+				fmt.Sprintf("Low: %d", id),
+			)
+		})
+	}
+
+	r.AddManager(manager).
+		AddWorker(workersWithHighPriority, "high", 2).
+		AddWorker(workersWithLowPriority, "low", 4)
+
+	r.Start()
+
+	lowPriorityOutputString := strings.Join(lowPriorityOutput, ", ")
+	highPriorityOutputString := strings.Join(highPriorityOutput, ", ")
 
 	r.CallSafe(func() {
-		if len(workerOutput) != iterations {
-			t.Errorf("Expected total iterations to be %d, but got %d", iterations, len(workerOutput))
+		if len(highPriorityOutput) != highPriorityIterations {
+			t.Errorf("High priority workers did not run %d times", highPriorityIterations)
+		}
+
+		if len(lowPriorityOutput) != lowPriorityIterations {
+			t.Errorf("Low priority workers did not run %d times", lowPriorityIterations)
+		}
+
+		for i := 1; i <= highPriorityIterations; i++ {
+			if !strings.Contains(highPriorityOutputString, fmt.Sprintf("High: %d", i)) {
+				t.Errorf("High priority worker %d did not run", i)
+			}
+		}
+
+		for i := 1; i <= lowPriorityIterations; i++ {
+			if !strings.Contains(lowPriorityOutputString, fmt.Sprintf("Low: %d", i)) {
+				t.Errorf("Low priority worker %d did not run", i)
+			}
 		}
 	})
+}
+
+func TestSendTo(t *testing.T) {
+	t.Parallel()
+
+	var output string
+	expected := "Hello World!"
+
+	manager := func(r *routiner.Routiner) {
+		r.SendTo("default", expected)
+	}
+
+	worker := func(r *routiner.Routiner, m any) {
+		output = m.(string)
+	}
+
+	routiner.New().
+		AddManager(manager).
+		AddWorker(worker, "default", 1).
+		Start()
+
+	if output != expected {
+		t.Errorf("Expected output %s, but got %s", expected, output)
+	}
+}
+
+func TestSendTo_MessageCantBeSentToAClosedChannel(t *testing.T) {
+	t.Parallel()
+
+	var output []string
+
+	manager := func(r *routiner.Routiner) {
+		go func() {
+			for i := 0; i < 3; i++ {
+				ok := r.SendTo("default", i)
+				if ok {
+					t.Errorf("Message %d shouldn't have been sent to a closed channel", i)
+				}
+			}
+		}()
+	}
+
+	worker := func(r *routiner.Routiner, m any) {
+		id := m.(int)
+		r.CallSafe(func() {
+			output[id] = fmt.Sprintf("Worker %d", id)
+		})
+	}
+
+	routiner.New().
+		AddManager(manager).
+		AddWorker(worker, "default", 1).
+		Start()
+
+	if len(output) != 0 {
+		t.Errorf("Worker output should be empty, but got %v", output)
+	}
 }
 
 func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
 	t.Parallel()
 
-	var workerOutput []string
-
-	r := routiner.New(routiner.WithWorkers(3))
+	var output []string
 
 	// Create a WaitGroup to hold all the workers
 	// until the quit signal is received.
 	wgForQuit := new(sync.WaitGroup)
 	wgForQuit.Add(1)
 
-	worker := func(r *routiner.Routiner, o any) {
-		id := o.(int)
+	worker := func(r *routiner.Routiner, m any) {
+		id := m.(int)
 
 		if id == 2 {
-			workerOutput = append(workerOutput, fmt.Sprintf("Worker %d", id))
+			output = append(output, fmt.Sprintf("Worker %d", id))
 
 			r.Quit()
 		} else {
 			wgForQuit.Wait()
-			workerOutput = append(workerOutput, fmt.Sprintf("Worker %d", id))
+			output = append(output, fmt.Sprintf("Worker %d", id))
 		}
 	}
 
 	manager := func(r *routiner.Routiner) {
-		for i := 1; i <= r.Workers(); i++ {
+		for i := 1; i <= r.TotalWorkers(); i++ {
 			r.Send(i)
 		}
 	}
 
-	r.Run(manager, worker)
+	r := routiner.New()
+	r.AddManager(manager).
+		AddWorker(worker, "default", 3).
+		Start()
 
 	if r.ActiveWorkers() != 0 {
 		t.Errorf("Active Workers should be set to 0, but got %d", r.ActiveWorkers())
 	}
 
-	if len(workerOutput) != 1 || workerOutput[0] != "Worker 2" {
-		t.Errorf("Worker 2 was not found: %s", workerOutput)
+	if len(output) != 1 || output[0] != "Worker 2" {
+		t.Errorf("Worker 2 was not found: %s", output)
 	}
 }
 
 func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 	t.Parallel()
 
-	r := routiner.New(routiner.WithWorkers(10))
-
-	// We need to create slices of worker channels and wait groups
-	// to keep track of the workers and their states. Because
-	// wait groups will be passed through the channels, we
-	// need to use pointers for proper synchronization.
-	workerChannels := make([]chan *sync.WaitGroup, r.Workers())
-	waitGroups := make([]*sync.WaitGroup, r.Workers())
+	r := routiner.New()
 
 	// Each worker will receive a channel through which it
 	// will receive a wait group. Once wg is received,
@@ -165,11 +271,20 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 	//
 	// We will be manually sending wait groups to the channels. That
 	// way we can control the order in which the workers finish.
-	worker := func(r *routiner.Routiner, o any) {
-		ch := o.(chan *sync.WaitGroup)
+	worker := func(r *routiner.Routiner, m any) {
+		ch := m.(chan *sync.WaitGroup)
 		wg := <-ch
 		wg.Done()
 	}
+
+	r.AddWorker(worker, "default", 10)
+
+	// We need to create slices of worker channels and wait groups
+	// to keep track of the workers and their states. Because
+	// wait groups will be passed through the channels, we
+	// need to use pointers for proper synchronization.
+	workerChannels := make([]chan *sync.WaitGroup, r.TotalWorkers())
+	waitGroups := make([]*sync.WaitGroup, r.TotalWorkers())
 
 	// The testing process should only start once all workers are in the
 	// active state. We can achieve that by passing a WaitGroup to the
@@ -181,7 +296,7 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 	wgReadyToTest.Add(1)
 
 	manager := func(r *routiner.Routiner) {
-		for i := 0; i < r.Workers(); i++ {
+		for i := 0; i < r.TotalWorkers(); i++ {
 			// Creating a new wait group for each worker and adding
 			// a pointer to it to the waitGroups slice.
 			waitGroups[i] = new(sync.WaitGroup)
@@ -207,25 +322,27 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 		t.Fatalf("Active workers should be 0, but got %d", r.ActiveWorkers())
 	}
 
-	go r.Run(manager, worker)
+	r.AddManager(manager)
+
+	go r.Start()
 
 	// Waiting for all workers to be in the active state
 	wgReadyToTest.Wait()
 
-	if r.ActiveWorkers() != r.Workers() {
-		t.Errorf("Active workers should be %d, but got %d", r.Workers(), r.ActiveWorkers())
+	if r.ActiveWorkers() != r.TotalWorkers() {
+		t.Errorf("Active workers should be %d, but got %d", r.TotalWorkers(), r.ActiveWorkers())
 	}
 
-	for i := 0; i < r.Workers()/2; i++ {
+	for i := 0; i < r.TotalWorkers()/2; i++ {
 		workerChannels[i] <- waitGroups[i]
 		waitGroups[i].Wait()
 	}
 
-	if r.ActiveWorkers() != r.Workers()/2 {
-		t.Errorf("Active workers should be %d, but got %d", r.Workers()/2, r.ActiveWorkers())
+	if r.ActiveWorkers() != r.TotalWorkers()/2 {
+		t.Errorf("Active workers should be %d, but got %d", r.TotalWorkers()/2, r.ActiveWorkers())
 	}
 
-	for i := r.Workers() / 2; i < r.Workers()-2; i++ {
+	for i := r.TotalWorkers() / 2; i < r.TotalWorkers()-2; i++ {
 		workerChannels[i] <- waitGroups[i]
 		waitGroups[i].Wait()
 	}
@@ -234,7 +351,7 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 		t.Errorf("Active workers should be 2, but got %d", r.ActiveWorkers())
 	}
 
-	for i := r.Workers() - 2; i < r.Workers(); i++ {
+	for i := r.TotalWorkers() - 2; i < r.TotalWorkers(); i++ {
 		workerChannels[i] <- waitGroups[i]
 		waitGroups[i].Wait()
 	}
@@ -249,9 +366,7 @@ func TestCallSafe(t *testing.T) {
 
 	safeSum := 0
 
-	r := routiner.New(routiner.WithWorkers(100))
-
-	worker := func(r *routiner.Routiner, o any) {
+	worker := func(r *routiner.Routiner, m any) {
 		for i := 0; i < 1000; i++ {
 			r.CallSafe(func() {
 				safeSum++
@@ -260,12 +375,15 @@ func TestCallSafe(t *testing.T) {
 	}
 
 	manager := func(r *routiner.Routiner) {
-		for i := 1; i <= r.Workers(); i++ {
+		for i := 1; i <= r.TotalWorkers(); i++ {
 			r.Send(i)
 		}
 	}
 
-	r.Run(manager, worker)
+	routiner.New().
+		AddManager(manager).
+		AddWorker(worker, "default", 100).
+		Start()
 
 	if safeSum != 100000 {
 		t.Errorf("Safe sum should be 100000, but got %d", safeSum)
@@ -286,8 +404,8 @@ func TestInfo_LogOutputType(t *testing.T) {
 	manager := func(r *routiner.Routiner) {
 		r.Send(expectedOutput)
 	}
-	worker := func(r *routiner.Routiner, o any) {
-		r.Info(o.(string))
+	worker := func(r *routiner.Routiner, m any) {
+		r.Info(m.(string))
 	}
 	routiner.New().Run(manager, worker)
 
@@ -295,5 +413,40 @@ func TestInfo_LogOutputType(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "Worker has finished!") {
 		t.Errorf("Expected output %q, got %q", expectedOutput, logOutput)
+	}
+}
+
+func TestRun(t *testing.T) {
+	t.Parallel()
+
+	r := routiner.New()
+
+	totalWorkers := 2
+	output := make([]string, totalWorkers)
+
+	manager := func(r *routiner.Routiner) {
+		for i := 0; i < r.TotalWorkers(); i++ {
+			r.Send(i)
+		}
+	}
+
+	worker := func(r *routiner.Routiner, m any) {
+		id := m.(int)
+		r.CallSafe(func() {
+			output[id] = fmt.Sprintf("Worker %d", id)
+		})
+	}
+
+	r.Run(manager, worker, "default", totalWorkers)
+
+	if r.TotalWorkers() != totalWorkers {
+		t.Errorf("Expected %d workers, but got %d", totalWorkers, r.TotalWorkers())
+	}
+
+	for i := 0; i < totalWorkers; i++ {
+		io := fmt.Sprintf("Worker %d", i)
+		if output[i] != io {
+			t.Errorf("Expected output %s, but got %s", io, output[i])
+		}
 	}
 }

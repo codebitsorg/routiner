@@ -1,21 +1,36 @@
 package routiner
 
 import (
+	"errors"
 	"fmt"
 	"log"
-	"math/rand"
 	"runtime/debug"
 	"sync"
 )
 
+// Worker is a struct that represents a worker.
+type Worker struct {
+	f        func(r *Routiner, o any)
+	input    string
+	quantity int
+}
+
+// Input is a struct that represents an input channel.
+type Input struct {
+	name   string
+	ch     chan any
+	closed bool
+}
+
+// Routiner is a struct that represents a routiner.
 type Routiner struct {
-	initChan      chan any
-	input         []chan any
+	manager       func(r *Routiner)
+	workers       []Worker
+	input         map[string]*Input
 	output        chan string
-	wg            *sync.WaitGroup // Wait group to track the number of active workers.
 	quitJob       chan int
-	workers       int
 	activeWorkers int
+	wg            *sync.WaitGroup // Wait group to track the number of active workers.
 	mu            sync.RWMutex
 }
 
@@ -38,24 +53,33 @@ func (o option) apply(r *Routiner) {
 
 // ***** End Options *****
 
+// New is a helper function to create a new Routiner.
+func New(opts ...option) *Routiner {
+	return NewRoutiner(opts...)
+}
+
 // NewRoutiner creates a new Routiner.
 func NewRoutiner(opts ...option) *Routiner {
 	r := &Routiner{
-		initChan: make(chan any),
-		output:   make(chan string),
-		wg:       new(sync.WaitGroup),
-		quitJob:  make(chan int),
-		workers:  1,
+		output:  make(chan string),
+		wg:      new(sync.WaitGroup),
+		quitJob: make(chan int),
 	}
 
 	r.With(opts...)
 
-	return r
-}
+	// If WithInputChannels option is not set the input
+	// field will be nil. In this case we need to
+	// initialize it with a default channel.
+	if r.input == nil {
+		r.input = make(map[string]*Input, 1)
+		r.input["default"] = &Input{
+			name: "default",
+			ch:   make(chan any),
+		}
+	}
 
-// New is a helper function to create a new Routiner.
-func New(opts ...option) *Routiner {
-	return NewRoutiner(opts...)
+	return r
 }
 
 // With is a helper function to set options
@@ -78,32 +102,53 @@ func (r *Routiner) With(opts ...option) {
 	}
 }
 
-// WithWorkers sets the number of workers to n.
-func WithWorkers(n int) option {
-	return newOption("WithWorkers", func(r *Routiner) {
-		if n < 1 {
-			n = 1
-		}
-
-		r.workers = n
+func WithOutputChannel(n int) option {
+	return newOption("WithOutputChannel", func(r *Routiner) {
+		// Set the output channel.
 	})
 }
 
-func WithInputChannels(n int) option {
-	return newOption("WithInputChannels", func(r *Routiner) {
-		if n > 1 {
-			if n > r.Workers() {
-				n = r.Workers()
-			}
+func (r *Routiner) AddManager(f func(r *Routiner)) *Routiner {
+	r.RegisterManager(f)
 
-			r.input = make([]chan any, n)
+	return r
+}
 
-			for i := 0; i < n; i++ {
-				r.input[i] = make(chan any)
-			}
+func (r *Routiner) RegisterManager(f func(r *Routiner)) {
+	r.manager = f
+}
+
+func (r *Routiner) AddWorker(f func(r *Routiner, m any), input string, quantity int) *Routiner {
+	r.RegisterWorkers(f, input, quantity)
+
+	return r
+}
+func (r *Routiner) RegisterWorkers(f func(r *Routiner, m any), input string, quantity int) {
+	r.workers = append(r.workers, Worker{f, input, quantity})
+
+	if _, ok := r.input[input]; !ok {
+		r.input[input] = &Input{
+			name: input,
+			ch:   make(chan any),
 		}
+	}
+}
 
-	})
+func (r *Routiner) Start() {
+	defer close(r.output)
+
+	r.startWorkers()
+
+	go r.startManager()
+
+	for {
+		select {
+		case message := <-r.output:
+			log.Println(message)
+		case <-r.quitJob:
+			return
+		}
+	}
 }
 
 // Run starts the job processes. It first initializes all
@@ -112,27 +157,56 @@ func WithInputChannels(n int) option {
 //
 // To keep track of any notifications that might occur
 // in the worker processes, it listens to the input
-// channel. Current only log outout is supported.
+// channel. Current only log output is supported.
 //
 // The job will finish when a quit signal
 // is received.
 func (r *Routiner) Run(
 	manager func(r *Routiner),
-	worker func(r *Routiner, o any),
-) {
+	worker ...any,
+	// worker func(r *Routiner, o any),
+) error {
 	defer close(r.output)
-	defer close(r.initChan)
 
-	r.startWorkers(worker)
+	r.RegisterManager(manager)
 
-	go r.startManager(manager)
+	if len(worker) < 1 {
+		return errors.New("no worker provided")
+	}
+
+	f, ok := worker[0].(func(r *Routiner, o any))
+	if !ok {
+		return errors.New("worker must be a function")
+	}
+
+	input := "default"
+	if len(worker) > 1 && worker[1] != nil {
+		input, ok = worker[1].(string)
+		if !ok {
+			return errors.New("input must be a string")
+		}
+	}
+
+	quantity := 1
+	if len(worker) > 2 && worker[2] != nil {
+		quantity, ok = worker[2].(int)
+		if !ok {
+			return errors.New("quantity must be an int")
+		}
+	}
+
+	r.RegisterWorkers(f, input, quantity)
+
+	r.startWorkers()
+
+	go r.startManager()
 
 	for {
 		select {
 		case message := <-r.output:
 			log.Println(message)
 		case <-r.quitJob:
-			return
+			return nil
 		}
 	}
 }
@@ -148,24 +222,48 @@ func (r *Routiner) Info(str string) {
 	r.output <- str
 }
 
-func (r *Routiner) Send(obj any) {
-	// TODO: implement round-robin logic
+// Send sends the message to the default channel.
+func (r *Routiner) Send(obj any) bool {
+	if r.input["default"].closed {
+		return false
+	}
 
-	// Random logic to select the input channel
-	i := rand.Intn(len(r.input))
-	r.input[i] <- obj
+	r.input["default"].ch <- obj
+
+	return true
 }
 
-func (r *Routiner) Input() <-chan any {
-	return r.initChan
+// SendTo sends the message to the specified input channel.
+func (r *Routiner) SendTo(channel string, obj any) bool {
+	if r.input[channel].closed {
+		return false
+	}
+
+	r.input[channel].ch <- obj
+
+	return true
 }
 
-func (r *Routiner) Listen() any {
-	return <-r.initChan
+func (r *Routiner) TotalInputWorkers(input string) int {
+	for _, w := range r.workers {
+		if w.input == input {
+			return w.quantity
+		}
+	}
+
+	return 0
 }
 
-func (r *Routiner) Workers() int {
-	return r.workers
+func (r *Routiner) TotalWorkers() int {
+	var workers int
+
+	for _, w := range r.workers {
+		if w.f != nil {
+			workers += w.quantity
+		}
+	}
+
+	return workers
 }
 
 func (r *Routiner) CountInputChannels() int {
@@ -186,96 +284,43 @@ func (r *Routiner) Quit() {
 	r.resetActiveWorkers()
 }
 
-// startManager starts the manager process and
-// waits for all the workers to finish.
-func (r *Routiner) startManager(manager func(r *Routiner)) {
-	defer r.recover()()
+func (r *Routiner) startWorkers() {
+	// Wait for all workers to be active.
+	wgActiveWorkers := sync.WaitGroup{}
+	wgActiveWorkers.Add(r.TotalWorkers())
+	defer wgActiveWorkers.Wait()
 
-	// If WithInputChannels option is not set the input
-	// field will be nil. In this case we need to
-	// initialize it with a single channel.
-	if r.input == nil {
-		r.input = append(r.input, make(chan any))
-	}
+	// Start the workers.
+	for _, w := range r.workers {
+		for i := 0; i < w.quantity; i++ {
+			go func(w Worker, i int) {
+				defer r.recover()()
 
-	// If manager is too fast and there are too many workers to
-	// spawn out, there might be a situation (panic) where a
-	// goroutine sends closed input channel to the
-	// workers. To avoid this, we need to use WaitGroups
-	// to wait for for all workers receiving their
-	// input channel.
-	wg := sync.WaitGroup{}
+				// Should be the method of the worker
+				r.activateWorker(&wgActiveWorkers)
 
-	// In case input channels and workers aren't in the equal proportion
-	// we need to spread input channels evenly across all workers.
-	currentInputIndex := 0
+				for message := range r.input[w.input].ch {
+					w.f(r, message)
+				}
 
-	for range r.Workers() {
-		wg.Add(1)
-		// Check if we should pass the inputIndex
-		go func(inputIndex int) {
-			defer r.recover()()
-			defer wg.Done()
-			r.initChan <- r.input[inputIndex]
-		}(currentInputIndex)
-
-		// Increment the currentInputIndex after each iteration to
-		// spread the input channels evenly across all workers.
-		currentInputIndex += 1
-
-		// Once the currentInputIndex greater than the
-		// number of input channels - reset it to 0.
-		if currentInputIndex > len(r.input)-1 {
-			currentInputIndex = 0
+				// Should be the method of the worker
+				r.deactivateWorker()
+			}(w, i)
 		}
 	}
+}
 
-	manager(r)
+func (r *Routiner) startManager() {
+	defer r.recover()()
 
-	// Before closing input channels, we must be sure
-	// that they have been passed to all workers.
-	wg.Wait()
+	r.manager(r)
 
-	// To avoid deadlocks Input channels
-	// must be closed before initChan.
-	for _, in := range r.input {
-		close(in)
+	for _, i := range r.input {
+		close(i.ch)
+		i.closed = true
 	}
 
 	r.waitToFinish()
-}
-
-// startWorkers Run the worker's handler. This function increases the
-// number of active workers and holds the worker until the data is
-// available in the input channel.
-//
-// The function will finish only when all workers have been
-// set to the active state.
-//
-// Once the handler is done, the worker is deactivated:
-// the number of active workers and the activeWorkers
-// wait group are decremented.
-func (r *Routiner) startWorkers(worker func(r *Routiner, input any)) {
-	// Wait for all workers to be active.
-	wgAcitveWorkers := sync.WaitGroup{}
-	wgAcitveWorkers.Add(r.Workers())
-	defer wgAcitveWorkers.Wait()
-
-	// Start the workers.
-	for range r.Workers() {
-		go func() {
-			defer r.recover()()
-
-			r.activateWorker(&wgAcitveWorkers)
-
-			for input := range r.initChan {
-				for message := range input.(chan any) {
-					worker(r, message)
-				}
-				r.deactivateWorker()
-			}
-		}()
-	}
 }
 
 // waitToFinish waits for all workers to finish.
