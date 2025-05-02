@@ -6,7 +6,7 @@
 import "github.com/codebitsorg/routiner"
 
 func main() {
-	r := routiner.Init(routiner.WithWorkers(3))
+	r := routiner.New()
 }
 ```
 
@@ -14,21 +14,19 @@ func main() {
 
 ```golang
 manager := func(r *routiner.Routiner) {
-    for i := 1; i <= r.Workers(); i++ {
+    for i := 1; i <= 10; i++ {
         r.Send(i)
     }
 }
 
-worker := func(r *routiner.Routiner, o any) {
-    // The second parameter in the worker clouser can be anything.
-    // You need to type assert it
-    r.Info(fmt.Sprintf("Worker %d", o.(int)))
-    time.Sleep(1 * time.Second)
+worker := func(r *routiner.Routiner, m any) {
+    time.Sleep(500 * time.Millisecond)
+    r.Info(fmt.Sprintf("Worker %d", m.(int)))
 }
 ```
 
 - Run the job.
 
 ```golang
-r.Run(manager, worker)
+r.Run(manager, worker, "default", 3)
 ```
