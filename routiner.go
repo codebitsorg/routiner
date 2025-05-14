@@ -15,23 +15,72 @@ type Worker struct {
 	quantity int
 }
 
+// InputCollection is a struct that represents
+// a collection of input channels.
+type InputCollection struct {
+	inputs []*Input
+}
+
+func newInputCollection() *InputCollection {
+	return &InputCollection{
+		inputs: make([]*Input, 0),
+	}
+}
+
+func (ic *InputCollection) Count() int {
+	return len(ic.inputs)
+}
+
+func (ic *InputCollection) Add(input *Input) {
+	ic.inputs = append(ic.inputs, input)
+}
+
+func (ic *InputCollection) Get(name string) *Input {
+	for _, in := range ic.inputs {
+		if in.name == name {
+			return in
+		}
+	}
+
+	return nil
+}
+
+func (ic *InputCollection) Done() {
+	for _, in := range ic.inputs {
+		in.Done()
+	}
+}
+
 // Input is a struct that represents an input channel.
 type Input struct {
 	name   string
 	ch     chan any
+	quit   chan int
 	closed bool
+	cond   *sync.Cond
+}
+
+func (i *Input) Done() {
+	i.cond.L.Lock()
+	defer i.cond.L.Unlock()
+	if !i.closed {
+		i.closed = true
+		close(i.ch)
+		i.cond.Signal()
+	}
 }
 
 // Routiner is a struct that represents a routiner.
 type Routiner struct {
-	manager       func(r *Routiner)
-	workers       []Worker
-	input         map[string]*Input
-	output        chan string
-	quitJob       chan int
-	activeWorkers int
-	wg            *sync.WaitGroup // Wait group to track the number of active workers.
-	mu            sync.RWMutex
+	manager        func(r *Routiner)
+	workers        []*Worker
+	inputs         *InputCollection
+	output         chan string
+	quitJob        chan int
+	activeWorkers  int
+	wg             *sync.WaitGroup // Wait group to track the number of active workers.
+	mu             *sync.RWMutex
+	closeInputCond *sync.Cond
 }
 
 // ***** Options *****
@@ -53,7 +102,7 @@ func (o option) apply(r *Routiner) {
 
 // ***** End Options *****
 
-// New is a helper function to create a new Routiner.
+// New is an alias for NewRoutiner.
 func New(opts ...option) *Routiner {
 	return NewRoutiner(opts...)
 }
@@ -62,41 +111,21 @@ func New(opts ...option) *Routiner {
 func NewRoutiner(opts ...option) *Routiner {
 	r := &Routiner{
 		output:  make(chan string),
-		wg:      new(sync.WaitGroup),
+		inputs:  newInputCollection(),
 		quitJob: make(chan int),
+		wg:      new(sync.WaitGroup),
+		mu:      new(sync.RWMutex),
 	}
+
+	r.closeInputCond = sync.NewCond(&sync.Mutex{})
 
 	r.With(opts...)
-
-	// If WithInputChannels option is not set the input
-	// field will be nil. In this case we need to
-	// initialize it with a default channel.
-	if r.input == nil {
-		r.input = make(map[string]*Input, 1)
-		r.input["default"] = &Input{
-			name: "default",
-			ch:   make(chan any),
-		}
-	}
 
 	return r
 }
 
 // With is a helper function to set options
 func (r *Routiner) With(opts ...option) {
-	// Some other options might rely on amount of workers
-	// set. So we need to apply the WithWorkers option
-	// first if it is present in the options slice.
-	for i, opt := range opts {
-		if opt.name == "WithWorkers" {
-			opt.apply(r)
-			// Remove WithWorkers from the slice.
-			opts = append(opts[:i], opts[i+1:]...)
-			break
-		}
-	}
-
-	// Apply the remaining options.
 	for _, opt := range opts {
 		opt.apply(r)
 	}
@@ -108,34 +137,52 @@ func WithOutputChannel(n int) option {
 	})
 }
 
+// RegisterManager registers a manager function
+// in the Routiner
+func (r *Routiner) RegisterManager(f func(r *Routiner)) {
+	r.manager = f
+}
+
+// AddManager is an alias for RegisterManager.
 func (r *Routiner) AddManager(f func(r *Routiner)) *Routiner {
 	r.RegisterManager(f)
 
 	return r
 }
 
-func (r *Routiner) RegisterManager(f func(r *Routiner)) {
-	r.manager = f
+// RegisterWorkers registers a worker function with the
+// provided input channel and quantity. It creates
+// an input channel if it doesn't exist.
+func (r *Routiner) RegisterWorkers(f func(r *Routiner, m any), input string, quantity int) {
+	r.workers = append(r.workers, &Worker{f, input, quantity})
+
+	// Create an input channel if it doesn't exist.
+	if in := r.inputs.Get(input); in == nil {
+		r.inputs.Add(&Input{
+			name: input,
+			ch:   make(chan any),
+			cond: r.closeInputCond,
+		})
+	}
 }
 
+// AddWorker is an alias for RegisterWorkers.
 func (r *Routiner) AddWorker(f func(r *Routiner, m any), input string, quantity int) *Routiner {
 	r.RegisterWorkers(f, input, quantity)
 
 	return r
 }
-func (r *Routiner) RegisterWorkers(f func(r *Routiner, m any), input string, quantity int) {
-	r.workers = append(r.workers, Worker{f, input, quantity})
-
-	if _, ok := r.input[input]; !ok {
-		r.input[input] = &Input{
-			name: input,
-			ch:   make(chan any),
-		}
-	}
-}
 
 func (r *Routiner) Start() {
 	defer close(r.output)
+
+	if r.inputs.Count() == 0 {
+		r.inputs.Add(&Input{
+			name: "default",
+			ch:   make(chan any),
+			cond: r.closeInputCond,
+		})
+	}
 
 	r.startWorkers()
 
@@ -164,7 +211,6 @@ func (r *Routiner) Start() {
 func (r *Routiner) Run(
 	manager func(r *Routiner),
 	worker ...any,
-	// worker func(r *Routiner, o any),
 ) error {
 	defer close(r.output)
 
@@ -222,24 +268,28 @@ func (r *Routiner) Info(str string) {
 	r.output <- str
 }
 
+func (r *Routiner) Input(name string) *Input {
+	return r.inputs.Get(name)
+}
+
+func (r *Routiner) Inputs() *InputCollection {
+	return r.inputs
+}
+
 // Send sends the message to the default channel.
-func (r *Routiner) Send(obj any) bool {
-	if r.input["default"].closed {
-		return false
-	}
-
-	r.input["default"].ch <- obj
-
-	return true
+func (r *Routiner) Send(message any) bool {
+	return r.SendTo("default", message)
 }
 
 // SendTo sends the message to the specified input channel.
-func (r *Routiner) SendTo(channel string, obj any) bool {
-	if r.input[channel].closed {
+func (r *Routiner) SendTo(channel string, message any) bool {
+	var in *Input
+
+	if in = r.Input(channel); in == nil || in.closed {
 		return false
 	}
 
-	r.input[channel].ch <- obj
+	in.ch <- message
 
 	return true
 }
@@ -266,8 +316,9 @@ func (r *Routiner) TotalWorkers() int {
 	return workers
 }
 
+// CountInputChannels returns the number of input channels.
 func (r *Routiner) CountInputChannels() int {
-	return len(r.input)
+	return r.inputs.Count()
 }
 
 // ActiveWorkers return the number of active workers.
@@ -278,7 +329,7 @@ func (r *Routiner) ActiveWorkers() int {
 	return r.activeWorkers
 }
 
-// Quit terminates the job and quit immediately.
+// Quit terminates the job and quits immediately.
 // It sets the number of active workers to 0.
 func (r *Routiner) Quit() {
 	r.resetActiveWorkers()
@@ -293,17 +344,27 @@ func (r *Routiner) startWorkers() {
 	// Start the workers.
 	for _, w := range r.workers {
 		for i := 0; i < w.quantity; i++ {
-			go func(w Worker, i int) {
+			go func(w *Worker, i int) {
 				defer r.recover()()
 
 				// Should be the method of the worker
 				r.activateWorker(&wgActiveWorkers)
 
-				for message := range r.input[w.input].ch {
-					w.f(r, message)
+			inputProcessing:
+				for {
+					select {
+					case message, ok := <-r.inputs.Get(w.input).ch:
+						if !ok {
+							break inputProcessing
+						}
+
+						w.f(r, message)
+					case <-r.inputs.Get(w.input).quit:
+						break inputProcessing
+					}
 				}
 
-				// Should be the method of the worker
+				// *It should probably be a Worker's method
 				r.deactivateWorker()
 			}(w, i)
 		}
@@ -315,12 +376,32 @@ func (r *Routiner) startManager() {
 
 	r.manager(r)
 
-	for _, i := range r.input {
-		close(i.ch)
-		i.closed = true
+	// Once the manager is finished, it needs to wait for all
+	// workers to complete their job.
+	r.closeInputCond.L.Lock()
+	for {
+		in := r.countOpenInputChannels()
+		if in == 0 {
+			break
+		}
+
+		r.closeInputCond.Wait()
 	}
+	r.closeInputCond.L.Unlock()
 
 	r.waitToFinish()
+}
+
+func (r *Routiner) countOpenInputChannels() int {
+	var count int
+
+	for _, i := range r.inputs.inputs {
+		if !i.closed {
+			count++
+		}
+	}
+
+	return count
 }
 
 // waitToFinish waits for all workers to finish.
@@ -330,13 +411,13 @@ func (r *Routiner) waitToFinish() {
 }
 
 // Activate a worker.
-func (r *Routiner) activateWorker(wgAcitveWorkers *sync.WaitGroup) {
+func (r *Routiner) activateWorker(wgActiveWorkers *sync.WaitGroup) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.wg.Add(1)
 	r.activeWorkers++
-	wgAcitveWorkers.Done()
+	wgActiveWorkers.Done()
 }
 
 // Deactivate a worker.
