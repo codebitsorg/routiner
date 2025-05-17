@@ -75,10 +75,6 @@ func TestSingleInputChannel(t *testing.T) {
 		r.CallSafe(func() {
 			workerOutput[id] = fmt.Sprintf("Worker %d", id)
 		})
-
-		if id == totalWorkers-1 {
-			r.Input("default").Done()
-		}
 	}
 
 	r.AddManager(manager).AddWorker(worker, "default", totalWorkers)
@@ -108,13 +104,9 @@ func TestMultipleInputChannels_WorkersForEachInputWorkOnDifferentTasks(t *testin
 			r.SendTo("high", i)
 		}
 
-		r.Input("high").Done()
-
 		for i := 1; i <= lowPriorityIterations; i++ {
 			r.SendTo("low", i)
 		}
-
-		r.Input("low").Done()
 	}
 
 	workersWithHighPriority := func(r *routiner.Routiner, m any) {
@@ -180,8 +172,6 @@ func TestMultipleInputChannels_WorkersFromOneInputProcessMessagesFromAnotherInpu
 		for i := 1; i <= 10; i++ {
 			r.Send(i)
 		}
-
-		//r.Input("default").Done()
 	}
 
 	workerForAllNumbers := func(r *routiner.Routiner, m any) {
@@ -191,9 +181,9 @@ func TestMultipleInputChannels_WorkersFromOneInputProcessMessagesFromAnotherInpu
 			output = append(output, fmt.Sprintf("All numbers: #%d", n))
 		})
 
-		//if n%2 == 0 {
-		//	r.SendTo("even", m)
-		//}
+		if n%2 == 0 {
+			r.SendTo("even", m)
+		}
 	}
 
 	workerForEvenNumbers := func(r *routiner.Routiner, m any) {
@@ -203,10 +193,6 @@ func TestMultipleInputChannels_WorkersFromOneInputProcessMessagesFromAnotherInpu
 		r.CallSafe(func() {
 			output = append(output, fmt.Sprintf("Even number: #%d", n))
 		})
-
-		//if n == 10 {
-		//	r.Input("even").Done()
-		//}
 	}
 
 	r.AddManager(manager).
@@ -254,10 +240,6 @@ func TestMultipleInputChannels_OrphanedChannelsCloseThemselves(t *testing.T) {
 		r.CallSafe(func() {
 			output = append(output, fmt.Sprintf("#%d", n))
 		})
-
-		if n == 3 {
-			r.Inputs().Done()
-		}
 	}
 
 	r.AddManager(manager).
@@ -289,7 +271,6 @@ func TestSendTo(t *testing.T) {
 
 	manager := func(r *routiner.Routiner) {
 		r.SendTo("default", expected)
-		r.Input("default").Done()
 	}
 
 	worker := func(r *routiner.Routiner, m any) {
@@ -312,7 +293,6 @@ func TestSendTo_MessageCantBeSentToAClosedChannel(t *testing.T) {
 	var output []string
 
 	manager := func(r *routiner.Routiner) {
-		r.Input("default").Done()
 		go func() {
 			for i := 0; i < 3; i++ {
 				ok := r.SendTo("default", i)
@@ -367,7 +347,6 @@ func TestJobCanBeQuitAtAnyMoment(t *testing.T) {
 		for i := 1; i <= r.TotalWorkers(); i++ {
 			r.Send(i)
 		}
-		r.Input("default").Done()
 	}
 
 	r := routiner.New()
@@ -434,8 +413,6 @@ func TestRoutinerCanTrackActiveWorkers(t *testing.T) {
 			// be used to send the wait groups to the workers.
 			r.Send(workerChannels[i])
 		}
-
-		r.Input("default").Done()
 
 		// Once all workers have been initialized
 		// we can start the testing process.
@@ -504,7 +481,6 @@ func TestCallSafe(t *testing.T) {
 		for i := 1; i <= r.TotalWorkers(); i++ {
 			r.Send(i)
 		}
-		r.Input("default").Done()
 	}
 
 	routiner.New().
@@ -530,7 +506,6 @@ func TestInfo_LogOutputType(t *testing.T) {
 	expectedOutput := "Worker has finished!"
 	manager := func(r *routiner.Routiner) {
 		r.Send(expectedOutput)
-		r.Input("default").Done()
 	}
 	worker := func(r *routiner.Routiner, m any) {
 		r.Info(m.(string))
@@ -556,7 +531,6 @@ func TestRun(t *testing.T) {
 		for i := 0; i < r.TotalWorkers(); i++ {
 			r.Send(i)
 		}
-		r.Input("default").Done()
 	}
 
 	worker := func(r *routiner.Routiner, m any) {

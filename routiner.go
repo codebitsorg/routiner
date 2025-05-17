@@ -10,9 +10,10 @@ import (
 
 // Worker is a struct that represents a worker.
 type Worker struct {
-	f        func(r *Routiner, o any)
-	input    string
-	quantity int
+	f      func(r *Routiner, o any)
+	input  string
+	active bool
+	//quantity int
 }
 
 // InputCollection is a struct that represents
@@ -151,10 +152,15 @@ func (r *Routiner) AddManager(f func(r *Routiner)) *Routiner {
 }
 
 // RegisterWorkers registers a worker function with the
-// provided input channel and quantity. It creates
-// an input channel if it doesn't exist.
+// provided input channel. It creates an input channel
+// with the provided name if it doesn't exist.
 func (r *Routiner) RegisterWorkers(f func(r *Routiner, m any), input string, quantity int) {
-	r.workers = append(r.workers, &Worker{f, input, quantity})
+	for i := 0; i < quantity; i++ {
+		r.workers = append(r.workers, &Worker{
+			f:     f,
+			input: input,
+		})
+	}
 
 	// Create an input channel if it doesn't exist.
 	if in := r.inputs.Get(input); in == nil {
@@ -295,25 +301,19 @@ func (r *Routiner) SendTo(channel string, message any) bool {
 }
 
 func (r *Routiner) TotalInputWorkers(input string) int {
+	count := 0
+
 	for _, w := range r.workers {
 		if w.input == input {
-			return w.quantity
+			count += 1
 		}
 	}
 
-	return 0
+	return count
 }
 
 func (r *Routiner) TotalWorkers() int {
-	var workers int
-
-	for _, w := range r.workers {
-		if w.f != nil {
-			workers += w.quantity
-		}
-	}
-
-	return workers
+	return len(r.workers)
 }
 
 // CountInputChannels returns the number of input channels.
@@ -343,31 +343,32 @@ func (r *Routiner) startWorkers() {
 
 	// Start the workers.
 	for _, w := range r.workers {
-		for i := 0; i < w.quantity; i++ {
-			go func(w *Worker, i int) {
-				defer r.recover()()
+		go func(w *Worker) {
+			defer r.recover()()
 
-				// Should be the method of the worker
-				r.activateWorker(&wgActiveWorkers)
+			// Should be the method of the worker
+			r.activateWorker(&wgActiveWorkers)
 
-			inputProcessing:
-				for {
-					select {
-					case message, ok := <-r.inputs.Get(w.input).ch:
-						if !ok {
-							break inputProcessing
-						}
-
-						w.f(r, message)
-					case <-r.inputs.Get(w.input).quit:
+		inputProcessing:
+			for {
+				select {
+				case message, ok := <-r.inputs.Get(w.input).ch:
+					if !ok {
 						break inputProcessing
 					}
-				}
 
-				// *It should probably be a Worker's method
-				r.deactivateWorker()
-			}(w, i)
-		}
+					w.active = true
+					w.f(r, message)
+					w.active = false
+					r.closeInputCond.Signal()
+				case <-r.inputs.Get(w.input).quit:
+					break inputProcessing
+				}
+			}
+
+			// *It should probably be a Worker's method
+			r.deactivateWorker()
+		}(w)
 	}
 }
 
@@ -380,8 +381,8 @@ func (r *Routiner) startManager() {
 	// workers to complete their job.
 	r.closeInputCond.L.Lock()
 	for {
-		in := r.countOpenInputChannels()
-		if in == 0 {
+		ready := r.readyToFinish()
+		if ready {
 			break
 		}
 
@@ -389,7 +390,28 @@ func (r *Routiner) startManager() {
 	}
 	r.closeInputCond.L.Unlock()
 
-	r.waitToFinish()
+	r.Inputs().Done()
+
+	r.wg.Wait()
+	r.quitJob <- 0
+}
+
+func (r *Routiner) readyToFinish() bool {
+	if r.countOpenInputChannels() == 0 {
+		return true
+	}
+
+	// TODO: Update the activeWorkers method to count Workers' active property
+	activeWorkersCount := 0
+	r.mu.RLock()
+	for _, w := range r.workers {
+		if w.active {
+			activeWorkersCount++
+		}
+	}
+	r.mu.RUnlock()
+
+	return activeWorkersCount == 0
 }
 
 func (r *Routiner) countOpenInputChannels() int {
@@ -402,12 +424,6 @@ func (r *Routiner) countOpenInputChannels() int {
 	}
 
 	return count
-}
-
-// waitToFinish waits for all workers to finish.
-func (r *Routiner) waitToFinish() {
-	r.wg.Wait()
-	r.quitJob <- 0
 }
 
 // Activate a worker.
